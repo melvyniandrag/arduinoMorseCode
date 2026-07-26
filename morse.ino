@@ -8,13 +8,18 @@ constexpr uint8_t D6 = 3;
 constexpr uint8_t D7 = 2;
 
 LiquidCrystal lcd(RS, ENABLE, D4, D5, D6, D7);
-
+constexpr uint8_t WORD_SPACE = 7;
 constexpr uint32_t MORSE_TIME_MS = 1000;
 constexpr uint32_t NUM_POLLS = 5;
 constexpr uint32_t POLL_INTERVAL_MS =
     MORSE_TIME_MS / NUM_POLLS;
+uint8_t currentSample = 0;
+
 constexpr int INPUT_PIN = A0;
 constexpr int PHOTORESISTOR_CUTOFF = 512;
+int reliableSample = -1;
+int numSynchronizationOffs = 0;
+int samplesToIgnore = -1;//NUM_POLLS;
 
 enum class PhotoresistorState
 {
@@ -22,7 +27,6 @@ enum class PhotoresistorState
   OFF
 };
 
-PhotoresistorState photoresistorState = PhotoresistorState::OFF;
 
 uint32_t nextPollTime;
 
@@ -36,37 +40,62 @@ void setup()
     lcd.print("ALFIE MORSE");
 }
 
-void printPhotoresState(PhotoresistorState& state)
+void printMsg(String msg)
 {
   lcd.setCursor(0, 1);
   lcd.print("                "); // 16 spaces
   lcd.setCursor(0, 1);
-
-  if(state == PhotoresistorState::ON)
-  {
-    lcd.print("On");
-  }
-  else
-  {
-    lcd.print("Off");
-  }
-
+  lcd.print(msg);
 }
 
-void processPoll()
+void synchronize(PhotoresistorState& state, int currentSample)
 {
-  int value = analogRead(INPUT_PIN);
-  
-  if(value > PHOTORESISTOR_CUTOFF)
+    // try to synchronize
+    // synchronize on word end
+    // want to get 7 offs in a row
+    if(numSynchronizationOffs == 0 && samplesToIgnore < 0)
+    {
+      samplesToIgnore = 2;
+    }
+    if(samplesToIgnore == 0)
+    {
+      if(state == PhotoresistorState::OFF)
+      {
+        numSynchronizationOffs += 1;
+        samplesToIgnore = NUM_POLLS;
+        Serial.print("Num offs: ");
+        Serial.print(numSynchronizationOffs);
+        Serial.print("/");
+        Serial.println(WORD_SPACE);
+        if(numSynchronizationOffs == WORD_SPACE)
+        {
+          reliableSample = currentSample;
+        }
+      }
+      else
+      {
+        Serial.println("Synchronization failed! Starting over.");
+        samplesToIgnore = -1;
+        numSynchronizationOffs = 0;
+      }
+    }
+    else
+    {
+      samplesToIgnore -= 1;
+    }
+}
+
+void processPoll(PhotoresistorState& state, int currentSample)
+{
+  if(reliableSample < 0 || reliableSample >= NUM_POLLS)
   {
-    photoresistorState = PhotoresistorState::ON;
+    printMsg("Synchronizing");
+    synchronize(state, currentSample);
   }
   else
   {
-    photoresistorState = PhotoresistorState::OFF;
+        printMsg("Ready");
   }
-  printPhotoresState(photoresistorState);
-
 }
 
 void loop()
@@ -75,10 +104,19 @@ void loop()
 
     if ((int32_t)(now - nextPollTime) >= 0)
     {
-        // Serial.print("polled at ");
-        // Serial.println(now);
-        // Serial.println(" ");
+        currentSample = ((currentSample + 1) % NUM_POLLS);
+        int value = analogRead(INPUT_PIN);
+        PhotoresistorState photoresistorState = PhotoresistorState::OFF;
+        if(value > PHOTORESISTOR_CUTOFF)
+        {
+          photoresistorState = PhotoresistorState::ON;
+        }
+        else
+        {
+          photoresistorState = PhotoresistorState::OFF;
+        }
+        processPoll(photoresistorState, currentSample);
         nextPollTime += POLL_INTERVAL_MS;
-        processPoll();
+
     }
 }
