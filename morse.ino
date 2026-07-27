@@ -15,6 +15,7 @@ constexpr uint8_t D7 = 2;
 
 LiquidCrystal lcd(RS, ENABLE, D4, D5, D6, D7);
 constexpr uint8_t WORD_SPACE = 7;
+constexpr uint8_t CHAR_SPACE = 3;
 constexpr uint32_t MORSE_TIME_MS = 1000;
 constexpr uint32_t NUM_POLLS = 5;
 constexpr uint32_t POLL_INTERVAL_MS =
@@ -43,8 +44,8 @@ constexpr char MORSE_TREE[32] = {
 bool currentSignal;
 uint16_t runLength = 0;
 uint8_t morseNode = 1;
-bool characterEmitted = false;
-bool wordSpaceEmitted = false;
+bool characterEmitted = true;
+bool wordSpaceEmitted = true;
 
 PhotoresistorState lastState = PhotoresistorState::OFF;
 
@@ -98,6 +99,11 @@ void resetSynchronizationState()
   samplesToIgnore = -1;
   numSynchronizationOffs = 0;
   reliableSample = -1;
+  lastState = PhotoresistorState::OFF;
+  runLength = 0;
+  characterEmitted = true;
+  wordSpaceEmitted = true;
+  morseNode = 1;
 }
 
 void synchronize(PhotoresistorState& state, int currentSample)
@@ -115,14 +121,14 @@ void synchronize(PhotoresistorState& state, int currentSample)
       {
         numSynchronizationOffs += 1;
         samplesToIgnore = NUM_POLLS;
-        Serial.print("Num offs: ");
-        Serial.print(numSynchronizationOffs);
-        Serial.print("/");
-        Serial.println(WORD_SPACE);
+        //Serial.print("Num offs: ");
+        //Serial.print(numSynchronizationOffs);
+        //Serial.print("/");
+        //Serial.println(WORD_SPACE);
         if(numSynchronizationOffs == WORD_SPACE)
         {
-          Serial.print("Synchronized on sample: ");
-          Serial.println(currentSample);
+          //Serial.print("Synchronized on sample: ");
+          //Serial.println(currentSample);
           printMsg("Synced");
           reliableSample = currentSample;
         }
@@ -141,12 +147,12 @@ void synchronize(PhotoresistorState& state, int currentSample)
 
 char getCharacter()
 {
+  char ret = '?';
   if (morseNode < sizeof(MORSE_TREE) && MORSE_TREE[morseNode] != '\0') {
-    return MORSE_TREE[morseNode];
-  } else {
-    return '?';
+    ret =  MORSE_TREE[morseNode];
   }
   morseNode = 1;
+  return ret;
 }
 
 
@@ -170,19 +176,11 @@ void processCompletedRun(PhotoresistorState& state, uint16_t length)
       Serial.println(length);
       resetSynchronizationState();
     }
-    characterEmitted = false;
-    wordSpaceEmitted = false;
   }
   else 
   {
-    if (length >= 7 && !wordSpaceEmitted) {
-      printMsg(getCharacter());
-      wordSpaceEmitted = true;
-    } else if (length >= 3 && !characterEmitted) {
-      printMsg(getCharacter());
-      characterEmitted = true;
-    }
-    // length 1–2 is the gap between parts of one character.
+    characterEmitted = false;
+    wordSpaceEmitted = false;
   }
 }
 
@@ -191,15 +189,34 @@ void parseMorse(PhotoresistorState& state)
   if (state == lastState)
   {
     ++runLength;
-    return;
   }
   else
   {
+    Serial.println("State changed!");
+
     // The signal changed, so the previous run is complete.
     processCompletedRun(lastState, runLength);
 
     lastState = state;
     runLength = 1;
+  }
+
+  if(state == PhotoresistorState::OFF)
+  {
+    //Serial.print("photoresistor OFF! runlength: ");
+    //Serial.println(runLength);
+
+        if (!characterEmitted &&
+            runLength >= CHAR_SPACE) {
+            printMsg(getCharacter());
+            characterEmitted = true;
+        }
+        if (!wordSpaceEmitted &&
+            runLength >= WORD_SPACE) {
+            printMsg("[NEW WORD]");
+            wordSpaceEmitted = true;
+        }
+
   }
 }
 
