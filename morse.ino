@@ -1,5 +1,11 @@
 #include <LiquidCrystal.h>
 
+enum class PhotoresistorState
+{
+  ON,
+  OFF
+};
+
 constexpr uint8_t RS = 12;
 constexpr uint8_t ENABLE = 11;
 constexpr uint8_t D4 = 5;
@@ -21,14 +27,45 @@ int reliableSample = -1;
 int numSynchronizationOffs = 0;
 int samplesToIgnore = -1;//NUM_POLLS;
 
-enum class PhotoresistorState
-{
-  ON,
-  OFF
+constexpr char MORSE_TREE[32] = {
+  '\0',                         // 0 unused
+  '\0',                         // 1 root
+  'E', 'T',                     // 2–3
+  'I', 'A', 'N', 'M',           // 4–7
+  'S', 'U', 'R', 'W',           // 8–11
+  'D', 'K', 'G', 'O',           // 12–15
+  'H', 'V', 'F', '\0',          // 16–19
+  'L', '\0', 'P', 'J',          // 20–23
+  'B', 'X', 'C', 'Y',           // 24–27
+  'Z', 'Q', '\0', '\0'          // 28–31
 };
 
+bool currentSignal;
+uint16_t runLength = 0;
+uint8_t morseNode = 1;
+bool characterEmitted = false;
+bool wordSpaceEmitted = false;
+
+PhotoresistorState lastState = PhotoresistorState::OFF;
 
 uint32_t nextPollTime;
+
+void addDot()
+{
+      Serial.println("dot");
+
+  morseNode *= 2;
+}
+
+void addDash()
+{
+      Serial.println("dash");
+
+  morseNode = morseNode * 2 + 1;
+}
+
+
+
 
 void setup()
 {
@@ -46,6 +83,21 @@ void printMsg(String msg)
   lcd.print("                "); // 16 spaces
   lcd.setCursor(0, 1);
   lcd.print(msg);
+}
+
+void printMsg(char msg)
+{
+  lcd.setCursor(0, 1);
+  lcd.print("                "); // 16 spaces
+  lcd.setCursor(0, 1);
+  lcd.print(msg);
+}
+
+void resetSynchronizationState()
+{
+  samplesToIgnore = -1;
+  numSynchronizationOffs = 0;
+  reliableSample = -1;
 }
 
 void synchronize(PhotoresistorState& state, int currentSample)
@@ -69,20 +121,86 @@ void synchronize(PhotoresistorState& state, int currentSample)
         Serial.println(WORD_SPACE);
         if(numSynchronizationOffs == WORD_SPACE)
         {
+          Serial.print("Synchronized on sample: ");
+          Serial.println(currentSample);
+          printMsg("Synced");
           reliableSample = currentSample;
         }
       }
       else
       {
         Serial.println("Synchronization failed! Starting over.");
-        samplesToIgnore = -1;
-        numSynchronizationOffs = 0;
+        resetSynchronizationState();
       }
     }
     else
     {
       samplesToIgnore -= 1;
     }
+}
+
+char getCharacter()
+{
+  if (morseNode < sizeof(MORSE_TREE) && MORSE_TREE[morseNode] != '\0') {
+    return MORSE_TREE[morseNode];
+  } else {
+    return '?';
+  }
+  morseNode = 1;
+}
+
+
+
+void processCompletedRun(PhotoresistorState& state, uint16_t length)
+{
+  if (state == PhotoresistorState::ON)
+  {
+    // Adjust these classifications to tolerate timing errors.
+    // e.g. could force length == 1 or length == 3, and if neither condition is met, log error and reset synchronization
+    if (length == 1) {
+      addDot();
+    } 
+    else if(length == 3)
+    {
+      addDash();
+    }
+    else
+    {
+      Serial.println("Error! run length was: ");
+      Serial.println(length);
+      resetSynchronizationState();
+    }
+    characterEmitted = false;
+    wordSpaceEmitted = false;
+  }
+  else 
+  {
+    if (length >= 7 && !wordSpaceEmitted) {
+      printMsg(getCharacter());
+      wordSpaceEmitted = true;
+    } else if (length >= 3 && !characterEmitted) {
+      printMsg(getCharacter());
+      characterEmitted = true;
+    }
+    // length 1–2 is the gap between parts of one character.
+  }
+}
+
+void parseMorse(PhotoresistorState& state)
+{
+  if (state == lastState)
+  {
+    ++runLength;
+    return;
+  }
+  else
+  {
+    // The signal changed, so the previous run is complete.
+    processCompletedRun(lastState, runLength);
+
+    lastState = state;
+    runLength = 1;
+  }
 }
 
 void processPoll(PhotoresistorState& state, int currentSample)
@@ -94,14 +212,21 @@ void processPoll(PhotoresistorState& state, int currentSample)
   }
   else
   {
-        printMsg("Ready");
+    if(currentSample == reliableSample)
+    {
+      // Only handle the sample if it's the reliable sample.
+      parseMorse(state);
+    }
+    else
+    {
+      // Ignore this sample.
+    }
   }
 }
 
 void loop()
 {
     uint32_t now = millis();
-
     if ((int32_t)(now - nextPollTime) >= 0)
     {
         currentSample = ((currentSample + 1) % NUM_POLLS);
@@ -117,6 +242,5 @@ void loop()
         }
         processPoll(photoresistorState, currentSample);
         nextPollTime += POLL_INTERVAL_MS;
-
     }
 }
